@@ -90,6 +90,12 @@ services:
         condition: service_healthy
     ports:
       - "${AIMODULE_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
     networks:
       - docs
     restart: unless-stopped
@@ -123,6 +129,12 @@ services:
         condition: service_healthy
     expose:
       - "3001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     networks:
       - docs
     restart: unless-stopped
@@ -132,12 +144,14 @@ services:
       context: ./web
       dockerfile: Dockerfile
       args:
-        VITE_ADMIN_API_URL: ${PUBLIC_URL:-http://localhost}
-        VITE_TESTER_API_URL: ${PUBLIC_URL:-http://localhost}
+        # Same-origin — nginx in this container proxies /api and /health to test-backend
+        VITE_ADMIN_API_URL: ""
+        VITE_TESTER_API_URL: ""
     ports:
       - "${WEB_PORT:-80}:80"
     depends_on:
-      - test-backend
+      test-backend:
+        condition: service_healthy
     networks:
       - docs
     restart: unless-stopped

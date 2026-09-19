@@ -1,7 +1,16 @@
 import axios from 'axios'
 
-const ADMIN_API_URL = import.meta.env.VITE_ADMIN_API_URL || 'http://localhost:3001'
-const TESTER_API_URL = import.meta.env.VITE_TESTER_API_URL || 'http://localhost:3001'
+/** Empty string = same-origin (Docker nginx proxies /api and /health to test-backend). */
+function resolveApiBaseUrl(envValue) {
+  if (envValue === '') return ''
+  if (envValue != null && String(envValue).trim() !== '') return envValue
+  // Vite omits empty build-args — prod bundles must not default to :3001 (not exposed in compose).
+  if (import.meta.env.PROD) return ''
+  return 'http://localhost:3001'
+}
+
+const ADMIN_API_URL = resolveApiBaseUrl(import.meta.env.VITE_ADMIN_API_URL)
+const TESTER_API_URL = resolveApiBaseUrl(import.meta.env.VITE_TESTER_API_URL)
 
 export const adminClient = axios.create({
   baseURL: ADMIN_API_URL,

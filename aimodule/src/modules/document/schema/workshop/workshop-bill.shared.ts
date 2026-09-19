@@ -228,6 +228,11 @@ function looksLikeLabourDescription(desc: string): boolean {
   return (
     /\b(R&R|R\s*&\s*R)\b/i.test(d) ||
     /\bDenting\b/i.test(d) ||
+    /\bPAINTING\b/i.test(d) ||
+    /\bETCHING\b/i.test(d) ||
+    /\bESTIMATION\b/i.test(d) ||
+    /\bFITMENT\b/i.test(d) ||
+    /\bTOP[- ]?UP\b/i.test(d) ||
     /\bBody\s*(?:&|and)\s*Paint\b/i.test(d) ||
     /\bBody\s*Repair\b/i.test(d) ||
     /\bWelding\b/i.test(d) ||
@@ -241,6 +246,26 @@ function looksLikeLabourDescription(desc: string): boolean {
   );
 }
 
+/** Maruti/Suzuki service-estimate flat-rate labour codes (ZA39L0, ZF27P0, PE03R0) — not 17100M68P00 spares. */
+function isMarutiFlatRateLabourCode(code: string): boolean {
+  const c = code.trim();
+  if (!c || c.length > 12) return false;
+  if (/^A-/i.test(c)) return false;
+  if (looksLikeSuzukiSparePartNumber(c)) return false;
+  return /^[A-Z]{2,3}\d{2,4}[RLPD]\d{0,2}$/i.test(c);
+}
+
+function looksLikeSuzukiSparePartNumber(code: string): boolean {
+  const c = code.trim();
+  if (!c) return false;
+  return /^\d{5,}M\d{2}[A-Z0-9]/i.test(c) || (c.length >= 11 && /\d{5,}/.test(c));
+}
+
+function isEmptyWorkshopAmount(v: unknown): boolean {
+  const n = preprocessWorkshopNumber(v);
+  return n === null || n === 0;
+}
+
 function looksLikeOemPartNumber(code: string): boolean {
   const c = code.trim();
   if (!c) return false;
@@ -252,6 +277,7 @@ function looksLikeOemPartNumber(code: string): boolean {
 
 function shouldBeLabourRow(code: string, sac: string, desc = ''): boolean {
   if (isLabourServiceSac(sac)) return true;
+  if (isMarutiFlatRateLabourCode(code)) return true;
   if (isOemLabourOperationCode(code)) return true;
   if (looksLikeLabourDescription(desc) && !shouldBePartsRow(code, sac) && !looksLikeOemPartNumber(code)) {
     return true;
@@ -765,18 +791,90 @@ function normalizeRowTypeFromPl(v: unknown): 'PART' | 'LABOUR' {
   return 'PART';
 }
 
-/** LABOUR: blank rate + labourCost only. Do not touch partsCost or other extracted fields. */
+function lineItemPrimaryAmount(row: Record<string, unknown>): number | null {
+  for (const key of ['totalAmount', 'taxableAmount', 'partsCost', 'labourCost'] as const) {
+    const n = preprocessWorkshopNumber(row[key]);
+    if (n !== null && n > 0) return n;
+  }
+  return null;
+}
+
+/** PART → partsCost; LABOUR → labourCost (rate cleared). taxableAmount/totalAmount unchanged. */
 function applyLineItemCostSplit(row: Record<string, unknown>): void {
   const rt = String(row.rowType ?? '').toUpperCase();
-  const total = (row.totalAmount as number | null) ?? null;
+  const amt = lineItemPrimaryAmount(row);
   if (rt === 'LABOUR') {
     row.rate = null;
-    row.labourCost = null;
+    row.labourCost = amt;
+    row.partsCost = null;
     return;
   }
   if (rt === 'PART') {
-    row.partsCost = total;
+    row.partsCost = amt;
     row.labourCost = null;
+  }
+}
+
+/** Rescue labour rows mis-tagged PART on unified Maruti-style estimates (Labor Amount column only). */
+function reclassifySequentialLineItem(row: Record<string, unknown>): void {
+  if (String(row.rowType ?? '').toUpperCase() !== 'PART') return;
+
+  const code = String(row.itemCode ?? '').trim();
+  const sac = normalizeSac(row.hsnSac);
+  const desc = String(row.description ?? '').trim();
+  const section = String(row.sectionHeader ?? '').toLowerCase();
+
+  if (looksLikeSuzukiSparePartNumber(code)) return;
+  if (!isEmptyWorkshopAmount(row.quantity) || !isEmptyWorkshopAmount(row.rate)) return;
+
+  if (isMarutiFlatRateLabourCode(code) || shouldBeLabourRow(code, sac, desc)) {
+    row.rowType = 'LABOUR';
+    return;
+  }
+
+  const hasAmount =
+    !isEmptyWorkshopAmount(row.totalAmount) ||
+    !isEmptyWorkshopAmount(row.taxableAmount) ||
+    !isEmptyWorkshopAmount(row.partsCost);
+  if (!hasAmount) return;
+
+  if (section.includes('labour') || section.includes('labor')) {
+    row.rowType = 'LABOUR';
+    return;
+  }
+
+  if (!shouldBePartsRow(code, sac) && !isPhysicalPartsHsn(sac)) {
+    row.rowType = 'LABOUR';
+  }
+}
+
+function lineItemExtraKeys(row: Record<string, unknown>): string[] {
+  const extras = row.extraColumns;
+  if (!Array.isArray(extras)) return [];
+  return extras.map((c) => String((c as { key?: unknown }).key ?? '').trim());
+}
+
+/** Maruti/Suzuki insurance estimate: MRP + R&R Cost in extras, no GST columns on PDF. */
+function rowHasMarutiInsuranceEstimateExtras(row: Record<string, unknown>): boolean {
+  const keys = lineItemExtraKeys(row).map((k) => k.toLowerCase());
+  const hasMrp = keys.some((k) => k === 'mrp');
+  const hasRrCost = keys.some((k) => /r&r\s*cost/i.test(k));
+  return hasMrp && hasRrCost;
+}
+
+export function isMarutiInsuranceEstimateTable(rows: Record<string, unknown>[]): boolean {
+  return rows.some(rowHasMarutiInsuranceEstimateExtras);
+}
+
+function clearAbsentTaxOnMarutiEstimateRow(row: Record<string, unknown>): void {
+  row.taxableAmount = null;
+  row.taxAmount = null;
+}
+
+function applyMarutiInsuranceEstimateTaxCleanup(lineItemsTable: Record<string, unknown>[]): void {
+  if (!isMarutiInsuranceEstimateTable(lineItemsTable)) return;
+  for (const row of lineItemsTable) {
+    clearAbsentTaxOnMarutiEstimateRow(row);
   }
 }
 
@@ -793,8 +891,9 @@ function expandLineItemArrayRow(arr: unknown[]): Record<string, unknown> {
     }
     row[k] = coerceVal(fixed[i], LINE_ITEMS_NUMERIC_IDX.has(i));
   });
-  applyLineItemCostSplit(row);
   row.extraColumns = parseLineItemExtraColumnPairs(fixed);
+  reclassifySequentialLineItem(row);
+  applyLineItemCostSplit(row);
   return row;
 }
 
@@ -812,8 +911,13 @@ export function expandLineItemsArrayRows(raw: Record<string, unknown>): Record<s
       });
   } else {
     lineItemsTable = rawItems as Record<string, unknown>[];
-    lineItemsTable.forEach(applyLineItemCostSplit);
+    lineItemsTable.forEach((row) => {
+      reclassifySequentialLineItem(row);
+      applyLineItemCostSplit(row);
+    });
   }
+
+  applyMarutiInsuranceEstimateTaxCleanup(lineItemsTable);
 
   return {
     ...raw,

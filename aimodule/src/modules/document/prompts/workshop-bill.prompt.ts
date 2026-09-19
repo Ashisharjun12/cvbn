@@ -240,6 +240,23 @@ const EDGE_CASES = `
   • RULE: Grey-bar section header rows are NOT data rows — put the header text in col[12] (sectionHeader)
     on the FIRST data row of that section, or repeat on each row in the section if unclear.
   • RULE: STOP at Grand Total / SUMMARY page — do not extract HSN-wise tax summary rows.
+
+  [EC-8] Maruti/Suzuki Service Estimate — shared 9-column table (Parts + Labour sections)
+  • SYMPTOM: One table: Srl | Part Number | Description | Tax | Qty | Rate | Taxable Amount |
+    Tax Paid Amount | Labor Amount. "Parts" section fills Qty/Rate/Taxable Amount; Labor Amount empty.
+    "Labour" section (and continuation pages) fill ONLY the rightmost Labor Amount column — Qty/Rate/Taxable blank.
+    Labour catalog codes are short (ZA39L0, ZF27P0, NA01R0, PE03R0) — NOT long spares like 17100M68P00.
+  • RULE: col[1]=PART under "Parts" header; col[1]=LABOUR under "Labour" header and for PAINTING/DENTING/ETCHING lines.
+  • RULE: For labour-only rows put the Labor Amount in col[11] (TotalAmt); leave col[6]–col[10] empty when blank on PDF.
+  • RULE: Do NOT tag labour catalog codes or paint/dent lines as PART just because the description names a component.
+
+  [EC-9] Maruti/Suzuki Insurance Estimation Details (Part & Labor Details)
+  • SYMPTOM: Header "Estimation Details" / "Part & Labor Details"; columns include MRP, Qty, Demand Type,
+    R&R Hrs, R&R Cost (Rs.), Denting Cost (Rs.), Painting Cost (Rs.), Total (Rs.); often Appr Qty / Approval Type.
+    No HSN/SAC, Taxable Amount, CGST/SGST/IGST columns — footer may say taxes extra as applicable.
+  • RULE (sequential): col[7]=MRP (rate); col[11]=Total (Rs.); col[9] and col[10] MUST be "" — never put MRP or R&R Cost in tax slots.
+  • RULE: Put MRP, Demand Type, R&R Hrs, R&R Cost, Denting Cost, Painting Cost, Appr Qty, Approval Type in extra pairs at col[13+].
+  • RULE: Line total is NOT tax — Total ≈ MRP×Qty + R&R Cost + Denting Cost + Painting Cost (no GST on the line).
 `;
 
 export type WorkshopPromptLayout = 'split' | 'sequential';
@@ -269,8 +286,9 @@ const SEQUENTIAL_ARRAY_COLUMN_SPEC = `
   • Missing column → "" (empty string), NOT null or omit
   • col[1]: "PART" for P rows, "LABOUR" for L rows — from the PDF P/L column
   • col[12]: section header text (e.g. "HOOD CHANGE - (Body & Paint Work)") or "" if none
+  • If the PDF has NO Taxable Amount / Tax / CGST / SGST / IGST columns, leave col[9] and col[10] as ""
   • Return ONLY lineItemsTable — do NOT return partsTable or labourTable
-  • See [EC-7] for Honda mixed P/L format
+  • See [EC-7] for Honda mixed P/L format; see [EC-9] for Maruti insurance estimation (MRP + R&R columns)
 `;
 
 const SEQUENTIAL_TABLE_RULES = `
