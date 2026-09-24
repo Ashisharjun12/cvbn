@@ -23,6 +23,7 @@ import {
   mergeLineItemsRows,
   resequenceTableSerials,
   assignTableRowIndexes,
+  hasSerialGapsForTable,
 } from '../utils/workshop/workshop-bill.utils';
 import {
   buildPageChunks,
@@ -151,42 +152,8 @@ export class WorkshopBillExtractor {
     return rowCount < this.minRowsForChunk(pageIndices, chunkIndex, totalPageCount);
   }
 
-  private hasSerialGapsForTable(rows: Record<string, unknown>[]): boolean {
-    const serials: number[] = [];
-    for (const row of rows) {
-      const n = Number(row.srNo);
-      if (Number.isFinite(n) && n > 0) {
-        serials.push(n);
-      }
-    }
-    if (serials.length <= 1) return false;
-
-    const uniqueSerials = Array.from(new Set(serials)).sort((a, b) => a - b);
-
-    // Split into segments separated by large jumps (≥20).
-    // Dual-column invoices (Upcountry/Volvo) interleave two sequences like
-    // [1, 101, 2, 102, 3, 103], which sorts to [1,2,3,101,102,103] — a jump of
-    // 98 in the middle. Treating those as one range would always flag a gap.
-    // Instead we check each contiguous segment independently.
-    const segments: number[][] = [[uniqueSerials[0]]];
-    for (let i = 1; i < uniqueSerials.length; i++) {
-      if (uniqueSerials[i] - uniqueSerials[i - 1] >= 20) {
-        segments.push([]);
-      }
-      segments[segments.length - 1].push(uniqueSerials[i]);
-    }
-
-    for (const seg of segments) {
-      if (seg.length <= 1) continue;
-      const segMin = seg[0];
-      const segMax = seg[seg.length - 1];
-      if (segMax - segMin + 1 > seg.length) return true;
-    }
-    return false;
-  }
-
   private hasSerialGaps(parts: Record<string, unknown>[], labour: Record<string, unknown>[]): boolean {
-    return this.hasSerialGapsForTable(parts) || this.hasSerialGapsForTable(labour);
+    return hasSerialGapsForTable(parts) || hasSerialGapsForTable(labour);
   }
 
   private maxSerialFromRows(rows: Record<string, unknown>[]): number {
@@ -466,7 +433,7 @@ export class WorkshopBillExtractor {
     let initialRows = initial.lineItems.length;
 
     let isTruncated = this.isChunkSoftTruncated(initialRows, pageIndices, chunkIndex, totalPageCount);
-    if (!isTruncated && this.hasSerialGapsForTable(initial.lineItems)) {
+    if (!isTruncated && hasSerialGapsForTable(initial.lineItems)) {
       this.obs.warn(
         `WorkshopBillExtractor: Gap in serial numbers on sequential chunk ${chunkIndex + 1}. Marking as truncated.`,
         { lineItems: initialRows },
@@ -594,7 +561,7 @@ export class WorkshopBillExtractor {
       const mergedLineItems = mergeLineItemsRows(allLineItems);
       const maxSr = this.maxSerialFromRows(mergedLineItems);
       const totalRows = mergedLineItems.length;
-      if (maxSr > 0 && maxSr > totalRows + 2) {
+      if (maxSr > 0 && maxSr > totalRows) {
         this.obs.warn(
           `WorkshopBillExtractor: Sr.No gap after sequential merge — maxSr=${maxSr}, rows=${totalRows}. Flagging for human review.`,
           { maxSr, totalRows, pageCount },
@@ -659,7 +626,7 @@ export class WorkshopBillExtractor {
       this.maxSerialFromRows(mergedLabour),
     );
     const totalRows = mergedParts.length + mergedLabour.length;
-    if (maxSr > 0 && maxSr > totalRows + 2) {
+    if (maxSr > 0 && maxSr > totalRows) {
       this.obs.warn(
         `WorkshopBillExtractor: Sr.No gap after merge — maxSr=${maxSr}, rows=${totalRows}. ` +
         'Some table rows may be missing; flagging for human review.',

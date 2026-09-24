@@ -174,6 +174,42 @@ export function normaliseVehicleNo(raw: string | null | undefined): string | nul
 
 type TableRow = Record<string, unknown>;
 
+/**
+ * True when a table's printed Sr.No sequence has enough missing numbers to suggest
+ * AI truncation (not a single page-break artifact). Dual-column bills use segment splits.
+ */
+export function hasSerialGapsForTable(rows: TableRow[]): boolean {
+  const serials: number[] = [];
+  for (const row of rows) {
+    const n = Number(row.srNo);
+    if (Number.isFinite(n) && n > 0) {
+      serials.push(n);
+    }
+  }
+  if (serials.length <= 1) return false;
+
+  const uniqueSerials = Array.from(new Set(serials)).sort((a, b) => a - b);
+
+  // Split at jumps ≥20 (dual-column 1,101,2,102 → segments [1,2,3] and [101,102,103]).
+  const segments: number[][] = [[uniqueSerials[0]]];
+  for (let i = 1; i < uniqueSerials.length; i++) {
+    if (uniqueSerials[i] - uniqueSerials[i - 1] >= 20) {
+      segments.push([]);
+    }
+    segments[segments.length - 1].push(uniqueSerials[i]);
+  }
+
+  for (const seg of segments) {
+    if (seg.length <= 1) continue;
+    const segMin = seg[0];
+    const segMax = seg[seg.length - 1];
+    // ponytail: 1 missing serial per segment = page-break artifact; retry cannot recover it.
+    // Only >=2 missing indicates real truncation. Upgrade path: env-driven tolerance.
+    if (segMax - segMin + 1 - seg.length > 1) return true;
+  }
+  return false;
+}
+
 function rowDedupeKey(row: TableRow, amountKey: string): string {
   const srNo = String(row.srNo ?? '').trim();
   const code = String(row.partNumber ?? row.labourCode ?? '').trim();
