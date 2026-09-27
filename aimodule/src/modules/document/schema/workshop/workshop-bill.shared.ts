@@ -878,6 +878,123 @@ function applyMarutiInsuranceEstimateTaxCleanup(lineItemsTable: Record<string, u
   }
 }
 
+const TYRE_DESC_RE = /\bTYRE\b/i;
+const MARUTI_SERVICE_PART_GRID_MIN = 8;
+const MARUTI_TYRE_ORPHAN_MAX_AMOUNT = 500;
+const MARUTI_SLIP_MIN_SPAN = 3;
+
+function isSequentialPartRow(row: Record<string, unknown>): boolean {
+  return String(row.rowType ?? '').toUpperCase() === 'PART';
+}
+
+function partRowPrimaryAmount(row: Record<string, unknown>): number | null {
+  const rate = preprocessWorkshopNumber(row.rate);
+  const taxable = preprocessWorkshopNumber(row.taxableAmount);
+  if (rate !== null && rate > 0) return rate;
+  if (taxable !== null && taxable > 0) return taxable;
+  return null;
+}
+
+function isMarutiServiceEstimatePartGridRow(row: Record<string, unknown>): boolean {
+  if (!isSequentialPartRow(row)) return false;
+  const code = String(row.itemCode ?? '').trim();
+  if (!looksLikeSuzukiSparePartNumber(code)) return false;
+  if (isEmptyWorkshopAmount(row.quantity)) return false;
+  if (isEmptyWorkshopAmount(row.rate)) return false;
+  if (isEmptyWorkshopAmount(row.taxableAmount)) return false;
+  return true;
+}
+
+/** Maruti/Suzuki Service Estimate (EC-8) — parts grid with qty/rate/taxable, not EC-9 insurance. */
+export function isMarutiServiceEstimateTable(rows: Record<string, unknown>[]): boolean {
+  if (isMarutiInsuranceEstimateTable(rows)) return false;
+  let gridRows = 0;
+  for (const row of rows) {
+    if (isMarutiServiceEstimatePartGridRow(row)) gridRows++;
+  }
+  return gridRows >= MARUTI_SERVICE_PART_GRID_MIN;
+}
+
+function lowRateTyreOrphanPartIndices(rows: Record<string, unknown>[]): number[] {
+  const indices: number[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (!isSequentialPartRow(row)) continue;
+    const desc = String(row.description ?? '').trim();
+    if (!TYRE_DESC_RE.test(desc)) continue;
+    const amt = partRowPrimaryAmount(row);
+    if (amt !== null && amt < MARUTI_TYRE_ORPHAN_MAX_AMOUNT) indices.push(i);
+  }
+  return indices;
+}
+
+function contiguousPartBlock(rows: Record<string, unknown>[], start: number, end: number): boolean {
+  for (let i = start; i <= end; i++) {
+    if (!isSequentialPartRow(rows[i])) return false;
+  }
+  return true;
+}
+
+function simulateDescriptionRotation(
+  descriptions: string[],
+  start: number,
+  orphan: number,
+): string[] {
+  const out = descriptions.slice();
+  const saved = out[orphan];
+  for (let j = orphan; j > start; j--) {
+    out[j] = out[j - 1];
+  }
+  out[start] = saved;
+  return out;
+}
+
+/** Rotate misaligned descriptions when TYRE text lands on a cheap holder row (EC-8 slip). */
+export function repairMarutiServiceEstimateDescriptionSlip(lineItems: Record<string, unknown>[]): boolean {
+  if (!isMarutiServiceEstimateTable(lineItems)) return false;
+
+  const orphans = lowRateTyreOrphanPartIndices(lineItems);
+  if (orphans.length !== 1) return false;
+  const orphanIndex = orphans[0];
+
+  const descriptions = lineItems.map((r) => String(r.description ?? '').trim());
+  const candidates: number[] = [];
+
+  for (let start = 0; start <= orphanIndex - MARUTI_SLIP_MIN_SPAN; start++) {
+    if (!contiguousPartBlock(lineItems, start, orphanIndex)) continue;
+    const rotated = simulateDescriptionRotation(descriptions, start, orphanIndex);
+    const tyreAtStart = TYRE_DESC_RE.test(rotated[start]);
+    const tyreAtOrphan = TYRE_DESC_RE.test(rotated[orphanIndex]);
+    if (tyreAtStart && !tyreAtOrphan) candidates.push(start);
+  }
+
+  if (candidates.length === 0) return false;
+
+  const HIGH_PART_RATE = 5000;
+  const boundaryCrossings = candidates.filter((start) => {
+    const amt = partRowPrimaryAmount(lineItems[start]);
+    if (amt === null || amt < HIGH_PART_RATE) return false;
+    if (start === 0) return true;
+    const prev = partRowPrimaryAmount(lineItems[start - 1]);
+    return prev === null || prev < HIGH_PART_RATE;
+  });
+  const pool = boundaryCrossings.length > 0 ? boundaryCrossings : candidates;
+  // ponytail: when several rotations "work", prefer latest high-rate boundary (slip start near orphan TYRE).
+  const startIndex = Math.max(...pool);
+  const saved = lineItems[orphanIndex].description;
+  for (let j = orphanIndex; j > startIndex; j--) {
+    lineItems[j].description = lineItems[j - 1].description;
+  }
+  lineItems[startIndex].description = saved;
+  return true;
+}
+
+/** Unresolved TYRE description-slip after repair (for human review). */
+export function hasMarutiServiceEstimateDescriptionSlip(rows: Record<string, unknown>[]): boolean {
+  if (!isMarutiServiceEstimateTable(rows)) return false;
+  return lowRateTyreOrphanPartIndices(rows).length === 1;
+}
+
 function expandLineItemArrayRow(arr: unknown[]): Record<string, unknown> {
   const afterPc = stripPcColumn(arr);
   const afterCode = rescuePartCodeColumn(afterPc);
@@ -918,6 +1035,7 @@ export function expandLineItemsArrayRows(raw: Record<string, unknown>): Record<s
   }
 
   applyMarutiInsuranceEstimateTaxCleanup(lineItemsTable);
+  repairMarutiServiceEstimateDescriptionSlip(lineItemsTable);
 
   return {
     ...raw,

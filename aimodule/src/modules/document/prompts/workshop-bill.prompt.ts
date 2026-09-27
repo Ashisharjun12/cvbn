@@ -1,3 +1,5 @@
+import { MARUTI_EC8_FEW_SHOTS } from './workshop-bill.maruti-ec8.few-shot.js';
+
 const COLUMN_MAPPING = `
   SEMANTIC COLUMN MAPPING (map by header meaning — labels vary by OEM/dealer):
   Use these compact field names exactly as shown:
@@ -249,6 +251,10 @@ const EDGE_CASES = `
   • RULE: col[1]=PART under "Parts" header; col[1]=LABOUR under "Labour" header and for PAINTING/DENTING/ETCHING lines.
   • RULE: For labour-only rows put the Labor Amount in col[11] (TotalAmt); leave col[6]–col[10] empty when blank on PDF.
   • RULE: Do NOT tag labour catalog codes or paint/dent lines as PART just because the description names a component.
+  • RULE: One printed table row → one lineItemsTable row — never skip because description looks like a tyre/size/brand (e.g. TYRE(185/65 R15) (CEAT)).
+  • RULE: Part Number → col[2], Description → col[4] only; parentheses, /, and R15 stay inside col[4] — do not merge with the next row.
+  • RULE: Aftermarket tyre lines still use the printed Suzuki Part Number in col[2]; description in col[4] is independent of code shape.
+  • RULE: Parts — Taxable Amount → col[9]; Tax Paid Amount → col[10] when present on PDF; Labour — Labor Amount → col[11].
 
   [EC-9] Maruti/Suzuki Insurance Estimation Details (Part & Labor Details)
   • SYMPTOM: Header "Estimation Details" / "Part & Labor Details"; columns include MRP, Qty, Demand Type,
@@ -343,6 +349,7 @@ export const getWorkshopLeanArrayFirstChunkPrompt = (
   Extract ALL table data rows in STRICT PDF document order as array-of-arrays into lineItemsTable.
   ${SEQUENTIAL_ARRAY_COLUMN_SPEC}
   ${SEQUENTIAL_TABLE_RULES}
+  ${MARUTI_EC8_FEW_SHOTS}
 
   Return gate fields + lineItemsTable. Extract EVERY row on these pages in document order.
 `;
@@ -385,6 +392,7 @@ export const getWorkshopChunkArrayPrompt = (
   No header. No summary. No gate fields.
   ${SEQUENTIAL_ARRAY_COLUMN_SPEC}
   ${SEQUENTIAL_TABLE_RULES}
+  ${MARUTI_EC8_FEW_SHOTS}
 
   • lineItemsTable — all rows on these pages in strict top-to-bottom order. Use [] if none.
   • P/L column: "P"→col[1]="PART", "L"→col[1]="LABOUR"

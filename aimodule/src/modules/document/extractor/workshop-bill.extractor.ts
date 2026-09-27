@@ -46,6 +46,7 @@ import {
   expandWorkshopShortKeys,
   expandWorkshopArrayRows,
   expandLineItemsArrayRows,
+  hasMarutiServiceEstimateDescriptionSlip,
   isArrayRowFormat,
   isLineItemsArrayFormat,
   isWorkshopTruncationError,
@@ -752,6 +753,9 @@ export class WorkshopBillExtractor {
     const normVehicleNo = normaliseVehicleNo(rawVehicle);
     const vehicleState = extractVehicleState(normVehicleNo);
 
+    const lineItemsForSlip = (parsedResult.lineItemsTable ?? []) as Record<string, unknown>[];
+    const marutiDescriptionSlip = hasMarutiServiceEstimateDescriptionSlip(lineItemsForSlip);
+
     const enriched: Record<string, unknown> = {
       ...parsedResult,
       tableLayout: parsedResult.tableLayout ?? tableLayout,
@@ -760,7 +764,8 @@ export class WorkshopBillExtractor {
       billType,
       gstSummary: gstInfo,
       grandTotalVerified: grandTotalCheck.ok,
-      requiresHumanReview: parsedResult.requiresHumanReview || !grandTotalCheck.ok,
+      requiresHumanReview:
+        parsedResult.requiresHumanReview || !grandTotalCheck.ok || marutiDescriptionSlip,
       extractionMode: 'chunk-fallback',
     };
 
