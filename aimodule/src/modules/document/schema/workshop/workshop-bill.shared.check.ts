@@ -206,4 +206,38 @@ const insuranceSlip = expandLineItemsArrayRows({
 const insItems = insuranceSlip.lineItemsTable as Record<string, unknown>[];
 assert.match(String(insItems[0]?.description ?? ''), /\bTYRE\b/i);
 
+// No taxable column on PDF: inferred rate×qty in col[9] → cleared
+const inferredTaxable = expandLineItemsArrayRows({
+  lineItemsTable: [{
+    rowType: 'PART',
+    description: 'BOLT',
+    quantity: 2,
+    rate: 100,
+    taxableAmount: 200,
+    totalAmount: 200,
+  }],
+});
+const [inferredRow] = inferredTaxable.lineItemsTable as Record<string, unknown>[];
+assert.equal(inferredRow.taxableAmount, null);
+assert.equal(inferredRow.totalAmount, 200);
+
+// Explicit flag: keep taxable when header exists on PDF
+const explicitTaxable = expandLineItemsArrayRows({
+  lineItemsTableHasTaxableColumn: true,
+  lineItemsTable: [{
+    rowType: 'PART',
+    description: 'BOLT',
+    quantity: 2,
+    rate: 100,
+    taxableAmount: 200,
+    totalAmount: 236,
+    taxAmount: 36,
+  }],
+});
+const [explicitRow] = explicitTaxable.lineItemsTable as Record<string, unknown>[];
+assert.equal(explicitRow.taxableAmount, 200);
+
+// Rate-only Maruti-style row (no line tax): taxable cleared
+assert.equal(fanPart.taxableAmount, null);
+
 console.log('workshop-bill.shared.check: ok');

@@ -38,6 +38,12 @@ const documentGateProps: Record<string, Schema> = {
     type: Type.BOOLEAN,
     description: 'True if blurry, incomplete, handwritten, or totals do not reconcile.',
   },
+  lineItemsTableHasTaxableColumn: {
+    type: Type.BOOLEAN,
+    description:
+      'True only if the line-item table header includes Taxable / Taxable Amt / Taxable Value / Part Amt / ' +
+      'Labour Amt as a pre-tax base column. False if only Rate, Qty, Total, MRP, Labour Amount, R&R, etc.',
+  },
 };
 
 const partsRowItem: Schema = {

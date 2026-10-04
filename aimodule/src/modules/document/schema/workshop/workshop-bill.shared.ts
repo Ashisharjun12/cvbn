@@ -115,6 +115,8 @@ export const WorkshopDocumentGateSchema = z.object({
   invalidPageIndices: z.array(z.number()).nullable().optional(),
   confidenceScore: z.number().min(0).max(1).optional(),
   requiresHumanReview: z.boolean().optional(),
+  /** True when the line-item table prints a Taxable / Part Amt / Labour Amt (pre-tax) column. */
+  lineItemsTableHasTaxableColumn: z.boolean().optional(),
 });
 
 /** Default when WORKSHOP_MULTIPASS_PAGE_THRESHOLD env is unset (see config.ts). */
@@ -724,6 +726,12 @@ export function expandWorkshopArrayRows(raw: Record<string, unknown>): Record<st
   const finalParts = filterHsnSummaryRows([...trueParts, ...rescuedFromLabour].map(expandPartsArrayRow));
   const finalLabour = filterHsnSummaryRows([...trueLabour, ...rescuedFromParts].map(expandLabourArrayRow));
 
+  const taxableFlag = raw.lineItemsTableHasTaxableColumn;
+  enforceLineItemTaxableColumnPolicy(
+    [...finalParts, ...finalLabour],
+    typeof taxableFlag === 'boolean' ? taxableFlag : undefined,
+  );
+
   return {
     ...raw,
     partsTable: finalParts,
@@ -875,6 +883,63 @@ function applyMarutiInsuranceEstimateTaxCleanup(lineItemsTable: Record<string, u
   if (!isMarutiInsuranceEstimateTable(lineItemsTable)) return;
   for (const row of lineItemsTable) {
     clearAbsentTaxOnMarutiEstimateRow(row);
+  }
+}
+
+const TAXABLE_EXTRA_KEY_RE = /\b(taxable|part\s*amt|labour\s*amt|labor\s*amt)\b/i;
+
+function lineItemRowQtyForTaxableInfer(row: Record<string, unknown>): number {
+  const q = preprocessWorkshopNumber(row.quantity) ?? preprocessWorkshopNumber(row.quantityOrHours);
+  return q !== null && q > 0 ? q : 1;
+}
+
+function lineItemRowRateForTaxableInfer(row: Record<string, unknown>): number | null {
+  const r =
+    preprocessWorkshopNumber(row.rate) ??
+    preprocessWorkshopNumber(row.unitPrice) ??
+    preprocessWorkshopNumber(row.partsCost) ??
+    preprocessWorkshopNumber(row.labourCost);
+  return r !== null && r > 0 ? r : null;
+}
+
+/** Model often copies rate×qty into taxable when the PDF has no taxable column. */
+export function taxableAmountMatchesRateTimesQty(row: Record<string, unknown>): boolean {
+  const taxable = preprocessWorkshopNumber(row.taxableAmount);
+  if (taxable === null || taxable <= 0) return false;
+  const rate = lineItemRowRateForTaxableInfer(row);
+  if (rate === null) return false;
+  const expected = rate * lineItemRowQtyForTaxableInfer(row);
+  const tol = Math.max(0.05, Math.abs(expected) * 0.002);
+  return Math.abs(taxable - expected) <= tol;
+}
+
+function rowExtraKeysSuggestTaxableColumn(row: Record<string, unknown>): boolean {
+  return lineItemExtraKeys(row).some((k) => TAXABLE_EXTRA_KEY_RE.test(k));
+}
+
+/** Conservative: prefer keeping taxable on real GST / flat-labour bills. */
+export function inferLineItemsTableHasTaxableColumn(rows: Record<string, unknown>[]): boolean {
+  for (const row of rows) {
+    const tax = preprocessWorkshopNumber(row.taxAmount);
+    if (tax !== null && tax > 0) return true;
+    if (rowExtraKeysSuggestTaxableColumn(row)) return true;
+    if (!isEmptyWorkshopAmount(row.taxableAmount) && !taxableAmountMatchesRateTimesQty(row)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Clear line taxableAmount when the PDF line table has no taxable column. */
+export function enforceLineItemTaxableColumnPolicy(
+  rows: Record<string, unknown>[],
+  explicitFlag?: boolean,
+): void {
+  if (explicitFlag === true) return;
+  const shouldClear = explicitFlag === false || !inferLineItemsTableHasTaxableColumn(rows);
+  if (!shouldClear) return;
+  for (const row of rows) {
+    row.taxableAmount = null;
   }
 }
 
@@ -1036,6 +1101,12 @@ export function expandLineItemsArrayRows(raw: Record<string, unknown>): Record<s
 
   applyMarutiInsuranceEstimateTaxCleanup(lineItemsTable);
   repairMarutiServiceEstimateDescriptionSlip(lineItemsTable);
+
+  const taxableFlag = raw.lineItemsTableHasTaxableColumn;
+  enforceLineItemTaxableColumnPolicy(
+    lineItemsTable,
+    typeof taxableFlag === 'boolean' ? taxableFlag : undefined,
+  );
 
   return {
     ...raw,

@@ -121,6 +121,12 @@ const GATE_BLOCK = `
   • hasAllPagesCorrectType — false if any page is RC/DL/policy/sale invoice.
   • invalidPageIndices — 1-indexed wrong pages.
   If false, STOP.
+
+  STEP 1b — LINE TABLE TAXABLE COLUMN (first chunk / gate pass only):
+  • lineItemsTableHasTaxableColumn = true ONLY if the line-item table header prints Taxable / Taxable Amt /
+    Taxable Value / Part Amt / Labour Amt as a pre-tax base column.
+  • false if the table has only Rate, Qty, Total, MRP, Labour Amount, R&R Cost, etc. (no taxable header).
+  • Do NOT infer taxable from Rate×Qty — col[9] empty when no taxable column exists.
 `;
 
 
